@@ -138,6 +138,8 @@ python "[SKILL_FOLDER]/scripts/openai_generate.py" \
 
 ### Parameters
 
+> **Only `--prompt` is required.** Everything else has defaults — pass only what you need to override.
+
 | Flag | Required | Default | Notes |
 |------|----------|---------|-------|
 | `--prompt` / `-p` | ✅ | — | Full text prompt |
@@ -149,6 +151,35 @@ python "[SKILL_FOLDER]/scripts/openai_generate.py" \
 | `--compression` | ❌ | — | 0–100 (jpeg/webp only) |
 | `--background` | ❌ | — | `auto` / `opaque` (gpt-image-2 doesn't support transparent) |
 | `--moderation` | ❌ | `auto` | `auto` / `low` |
+
+---
+
+## CLI Cookbook
+
+Copy-pasteable invocations for the most common scenarios. Replace `SCRIPT` with the actual script path (typically `~/.agents/skills/openai-image-generation/scripts/openai_generate.py`). Only `--prompt` is required; everything else has defaults.
+
+```bash
+# Cheapest test (~$0.006) — verify setup with a throwaway image
+python SCRIPT --prompt "yellow circle on blue background" --quality low
+
+# Logo (medium quality, default 1024×1024 png)
+python SCRIPT --prompt "Modern minimalist logo for AcmeAI, blue geometric gradient" \
+    --quality medium
+
+# Hero banner (landscape, high quality, custom save path)
+python SCRIPT --prompt "Cinematic mountain valley at sunrise, golden light" \
+    --size 1536x1024 --quality high --output assets/hero.png
+
+# Multiple variations in one call (saved as icon_1.png, icon_2.png, icon_3.png)
+python SCRIPT --prompt "App icon for a meditation app, soft gradients" \
+    --n 3 --output outputs/icon.png
+
+# Web-ready compressed JPEG
+python SCRIPT --prompt "Hero photo of a coffee cup on a wooden desk" \
+    --format jpeg --compression 75 --output public/img/hero.jpg
+```
+
+**Path control:** `--output` accepts any relative or absolute path; parent directories are auto-created. For `--n > 1`, the script inserts `_1`, `_2`, … before the extension. If `--output` is omitted, the file lands at `outputs/openai-image-{timestamp}.{ext}` in the current working directory.
 
 ---
 
