@@ -1,0 +1,30 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.python-version
+
+# Generated images
+outputs/
+*.png
+*.jpg
+*.jpeg
+*.webp
+!docs/**/*.png
+!docs/**/*.jpg
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Tool results / agent scratch
+.claude/
+574022b8-*/
