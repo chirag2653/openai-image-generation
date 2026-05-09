@@ -5,19 +5,36 @@ OpenAI Image Generation Script (gpt-image-2)
 Generates images using OpenAI's GPT Image 2 model — released April 2026,
 described in OpenAI's docs as "our most capable image model."
 
-Usage:
-    python openai_generate.py --prompt "..." [--output path/to/image.png] [options]
+Usage (interactive / human-friendly):
+    python openai_generate.py --prompt "..." [--output PATH] [options]
+
+Usage (programmatic / agent-native):
+    python openai_generate.py --prompt "..." --json [options]
+        → suppresses the banner; emits a single JSON object on stdout.
 
 If --output is omitted, the script writes to:
     outputs/openai-image-YYYYMMDD-HHMMSS.png  (relative to current working dir)
 
-API Key:
+API Key (read-only — script never writes the key anywhere):
     Looks for OPENAI_API_KEY in this order:
       1. process env var OPENAI_API_KEY
       2. Windows User-scope env var (read via PowerShell, useful in IDEs that
          don't inherit User env vars — e.g. Cursor)
       3. .env.local in the current working directory
       4. .env in the current working directory
+
+Exit codes:
+    0  success — file(s) saved
+    1  key missing OR openai SDK not installed (stop and tell user how to fix)
+    2  API call failed (e.g. quota, invalid prompt, moderation rejection)
+    3  API returned no images (transient — safe to retry once)
+
+JSON mode output schema:
+    Success: {"ok": true, "saved": [...], "key_source": "...",
+              "model": "...", "size": "...", "quality": "...",
+              "format": "...", "n": N, "prompt": "...",
+              "cost_estimate_usd": float}
+    Failure: {"ok": false, "error": "...", "exit_code": N}
 
 Reference: https://developers.openai.com/api/docs/guides/image-generation
 """
@@ -26,11 +43,23 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as _dt
+import json
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# Windows console defensiveness: re-encode stdout/stderr as UTF-8 so non-ASCII
+# characters (em-dash, arrows, emoji, CJK, etc.) in prompts, output paths, or
+# this script's docstring don't crash on cp1252 consoles. Falls back silently
+# on older Python or when streams are already wrapped.
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass
 
 # =============================================================================
 # CONFIGURATION
@@ -52,6 +81,26 @@ VALID_SIZES_HINT = [
 VALID_QUALITIES = {"low", "medium", "high", "auto"}
 VALID_FORMATS = {"png", "jpeg", "webp"}
 
+# Approximate USD cost per image at 1024x1024 (OpenAI public pricing).
+# Scaled by area ratio for non-square sizes. "auto" estimated as medium.
+COST_TABLE = {"low": 0.006, "medium": 0.053, "high": 0.211, "auto": 0.053}
+
+
+def estimate_cost(size: str, quality: str, n: int) -> float:
+    """Estimate USD cost for size/quality/n. Best-effort — actual billing
+    may differ slightly. Returned as a float rounded to 4 decimals."""
+    base = COST_TABLE.get(quality, 0.053)
+    if size == "auto":
+        area_ratio = 1.0
+    else:
+        try:
+            w_str, h_str = size.lower().split("x")
+            w, h = int(w_str), int(h_str)
+            area_ratio = (w * h) / (1024 * 1024)
+        except (ValueError, AttributeError):
+            area_ratio = 1.0
+    return round(base * area_ratio * n, 4)
+
 
 # =============================================================================
 # DEFAULT FILENAME
@@ -68,10 +117,10 @@ def default_output_path(fmt: str) -> Path:
 
 
 # =============================================================================
-# API KEY LOADING (3-tier loader, mirrors gemini-image-generation pattern)
+# API KEY LOADING (4-tier loader — read-only, never writes)
 # =============================================================================
 def _read_windows_user_env(var_name: str) -> str | None:
-    """Read a Windows User-scope env var via PowerShell.
+    """Read a Windows User/Machine-scope env var via PowerShell.
 
     Useful for IDEs like Cursor that launch from a parent process predating
     the variable being set, so they don't inherit it through normal env.
@@ -139,6 +188,23 @@ def load_api_key() -> tuple[str | None, str | None]:
 
 
 # =============================================================================
+# OUTPUT HELPERS (json-mode aware)
+# =============================================================================
+def info(message: str, json_mode: bool) -> None:
+    """Informational message — stderr in json mode (so stdout stays clean
+    for the final JSON object), stdout otherwise."""
+    print(message, file=(sys.stderr if json_mode else sys.stdout))
+
+
+def emit_error(message: str, exit_code: int, json_mode: bool) -> int:
+    """Emit an error consistently in both modes; returns the exit code."""
+    if json_mode:
+        print(json.dumps({"ok": False, "error": message, "exit_code": exit_code}))
+    print(f"ERROR: {message}", file=sys.stderr)
+    return exit_code
+
+
+# =============================================================================
 # ARGUMENT PARSING
 # =============================================================================
 def parse_args() -> argparse.Namespace:
@@ -172,6 +238,10 @@ def parse_args() -> argparse.Namespace:
                         help="Background mode (gpt-image-2 doesn't support transparent)")
     parser.add_argument("--moderation", default=None, choices=["auto", "low"],
                         help="Moderation strictness (default: auto)")
+    parser.add_argument("--json", action="store_true", dest="json_output",
+                        help="Emit a single JSON object to stdout instead of the "
+                             "human banner. Use for programmatic / agent invocation. "
+                             "Informational logs go to stderr in this mode.")
     return parser.parse_args()
 
 
@@ -180,6 +250,7 @@ def parse_args() -> argparse.Namespace:
 # =============================================================================
 def main() -> int:
     args = parse_args()
+    json_mode = args.json_output
 
     # Resolve output path (default if not provided)
     output_path = Path(args.output) if args.output else default_output_path(args.format)
@@ -187,29 +258,35 @@ def main() -> int:
     # Load API key
     api_key, key_source = load_api_key()
     if not api_key:
-        print("ERROR: OPENAI_API_KEY not found.\n", file=sys.stderr)
-        print("Looked in:", file=sys.stderr)
-        print("  1. process env OPENAI_API_KEY", file=sys.stderr)
-        print("  2. Windows User/Machine env (via PowerShell)", file=sys.stderr)
-        print("  3. .env.local in cwd", file=sys.stderr)
-        print("  4. .env in cwd", file=sys.stderr)
-        print("\nFix options:", file=sys.stderr)
-        print("  Option A — Add to .env.local in this folder:", file=sys.stderr)
-        print("    OPENAI_API_KEY=sk-...", file=sys.stderr)
-        print("  Option B — Set Windows User env var permanently (PowerShell):", file=sys.stderr)
-        print("    [System.Environment]::SetEnvironmentVariable("
-              "'OPENAI_API_KEY','sk-...','User')", file=sys.stderr)
-        print("    Then restart your terminal.", file=sys.stderr)
-        return 1
+        if not json_mode:
+            print("ERROR: OPENAI_API_KEY not found.\n", file=sys.stderr)
+            print("Looked in:", file=sys.stderr)
+            print("  1. process env OPENAI_API_KEY", file=sys.stderr)
+            print("  2. Windows User/Machine env (via PowerShell)", file=sys.stderr)
+            print("  3. .env.local in cwd", file=sys.stderr)
+            print("  4. .env in cwd", file=sys.stderr)
+            print("\nFix options:", file=sys.stderr)
+            print("  Option A — Add to .env.local in this folder:", file=sys.stderr)
+            print("    OPENAI_API_KEY=sk-...", file=sys.stderr)
+            print("  Option B — Set Windows User env var permanently (PowerShell):", file=sys.stderr)
+            print("    [System.Environment]::SetEnvironmentVariable("
+                  "'OPENAI_API_KEY','sk-...','User')", file=sys.stderr)
+            print("    Then restart your terminal.", file=sys.stderr)
+            return 1
+        return emit_error(
+            "OPENAI_API_KEY not found. Looked in: process env, Windows User/Machine env, "
+            ".env.local in cwd, .env in cwd. Fix: set Windows User env var or add to .env.local.",
+            1, json_mode,
+        )
 
     # Lazy import — defer heavy SDK import until after key check
     try:
         from openai import OpenAI
     except ImportError:
-        print("ERROR: 'openai' package not installed. Run:", file=sys.stderr)
-        print("  pip install -r requirements.txt", file=sys.stderr)
-        print("  or: pip install openai", file=sys.stderr)
-        return 1
+        return emit_error(
+            "'openai' package not installed. Run: pip install -r requirements.txt",
+            1, json_mode,
+        )
 
     # Build kwargs (only include optionals when set, so SDK uses its defaults)
     kwargs: dict = {
@@ -227,38 +304,37 @@ def main() -> int:
     if args.moderation is not None:
         kwargs["moderation"] = args.moderation
 
-    # Print status
-    print("=" * 60)
-    print("OpenAI Image Generation (gpt-image-2)")
-    print("=" * 60)
-    print(f"Key source: {key_source}")
-    print(f"Model:      {args.model}")
-    print(f"Size:       {args.size}")
-    print(f"Quality:    {args.quality}")
-    print(f"Format:     {args.format}")
-    print(f"N:          {args.n}")
-    print(f"Output:     {output_path}{' (default)' if not args.output else ''}")
-    prompt_preview = args.prompt if len(args.prompt) <= 80 else args.prompt[:77] + "..."
-    print(f"Prompt:     {prompt_preview}")
-    print("=" * 60)
+    # Print human-friendly status banner (only in non-json mode)
+    if not json_mode:
+        print("=" * 60)
+        print("OpenAI Image Generation (gpt-image-2)")
+        print("=" * 60)
+        print(f"Key source: {key_source}")
+        print(f"Model:      {args.model}")
+        print(f"Size:       {args.size}")
+        print(f"Quality:    {args.quality}")
+        print(f"Format:     {args.format}")
+        print(f"N:          {args.n}")
+        print(f"Output:     {output_path}{' (default)' if not args.output else ''}")
+        prompt_preview = args.prompt if len(args.prompt) <= 80 else args.prompt[:77] + "..."
+        print(f"Prompt:     {prompt_preview}")
+        print("=" * 60)
 
     # Create output dir
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Call API
-    print("Calling /v1/images/generations ...")
+    info("Calling /v1/images/generations ...", json_mode)
     client = OpenAI(api_key=api_key)
     try:
         result = client.images.generate(**kwargs)
     except Exception as exc:  # noqa: BLE001
-        print(f"\nERROR: API call failed: {exc}", file=sys.stderr)
-        return 2
+        return emit_error(f"API call failed: {exc}", 2, json_mode)
 
     # Save image(s)
     images = result.data or []
     if not images:
-        print("ERROR: API returned no images.", file=sys.stderr)
-        return 3
+        return emit_error("API returned no images.", 3, json_mode)
 
     saved: list[str] = []
     for idx, item in enumerate(images):
@@ -272,14 +348,29 @@ def main() -> int:
             target = output_path.with_name(f"{stem}_{idx + 1}{ext}")
         target.write_bytes(base64.b64decode(b64))
         saved.append(str(target))
-        print(f"Saved: {target}  ({target.stat().st_size:,} bytes)")
+        info(f"Saved: {target}  ({target.stat().st_size:,} bytes)", json_mode)
 
     if not saved:
-        return 3
+        return emit_error("All images had empty b64_json; nothing saved.", 3, json_mode)
 
-    print("=" * 60)
-    print("SUCCESS")
-    print("=" * 60)
+    # Final result
+    if json_mode:
+        print(json.dumps({
+            "ok": True,
+            "saved": saved,
+            "key_source": key_source,
+            "model": args.model,
+            "size": args.size,
+            "quality": args.quality,
+            "format": args.format,
+            "n": args.n,
+            "prompt": args.prompt,
+            "cost_estimate_usd": estimate_cost(args.size, args.quality, args.n),
+        }))
+    else:
+        print("=" * 60)
+        print("SUCCESS")
+        print("=" * 60)
     return 0
 
 

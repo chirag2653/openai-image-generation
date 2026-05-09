@@ -133,7 +133,8 @@ python "[SKILL_FOLDER]/scripts/openai_generate.py" \
     [--format png|jpeg|webp] \
     [--compression 0-100] \
     [--background auto|opaque] \
-    [--moderation auto|low]
+    [--moderation auto|low] \
+    [--json]
 ```
 
 ### Parameters
@@ -151,6 +152,87 @@ python "[SKILL_FOLDER]/scripts/openai_generate.py" \
 | `--compression` | ❌ | — | 0–100 (jpeg/webp only) |
 | `--background` | ❌ | — | `auto` / `opaque` (gpt-image-2 doesn't support transparent) |
 | `--moderation` | ❌ | `auto` | `auto` / `low` |
+| `--json` | ❌ | off | Programmatic mode — emits a single JSON object on stdout instead of the human banner. Informational logs route to stderr. Use this when an agent calls the script. |
+
+---
+
+## Agent Invocation Playbook
+
+This script is designed to be called two ways. **Pick the mode that matches your situation.**
+
+### Mode A — Autonomous (no human in the loop)
+
+You're a parent agent calling this skill as a subroutine. Just run with `--json`:
+
+```bash
+python SCRIPT --prompt "..." --quality low --json
+```
+
+- All informational output goes to **stderr**.
+- **stdout** contains exactly one JSON object — parse it with `json.loads(stdout)`.
+- Skip the ASCII confirmation block in Step 5; that ceremony is for human users.
+
+### Mode B — Interactive (human in the loop)
+
+Walk through Steps 1–5 of the Context Gathering Flow. Show the confirmation block. Run on user "yes". Don't pass `--json`.
+
+### Exit Codes (both modes)
+
+| Code | Meaning | Agent action |
+|------|---------|--------------|
+| `0` | Success — file(s) saved at returned paths | Use the saved paths |
+| `1` | API key missing OR `openai` SDK not installed | **Stop.** Tell user to set `OPENAI_API_KEY` (Windows User scope recommended) or `pip install -r requirements.txt`. Never write the key to a file yourself. |
+| `2` | API call failed (quota, invalid prompt, moderation rejection, network) | Surface the error message verbatim. Don't auto-retry — failure reasons differ. |
+| `3` | API returned no images (rare, transient) | Safe to retry once with the same params. |
+
+### `--json` Output Schema
+
+**Success** (exit 0):
+```json
+{
+  "ok": true,
+  "saved": ["outputs/openai-image-20260509-150000.png"],
+  "key_source": "Windows User env",
+  "model": "gpt-image-2",
+  "size": "1024x1024",
+  "quality": "low",
+  "format": "png",
+  "n": 1,
+  "prompt": "yellow circle on blue",
+  "cost_estimate_usd": 0.006
+}
+```
+
+**Failure** (exit 1, 2, or 3):
+```json
+{ "ok": false, "error": "<message>", "exit_code": 2 }
+```
+
+### Programmatic Invocation Example (Python)
+
+```python
+import json, subprocess
+result = subprocess.run(
+    ["python", SCRIPT, "--prompt", prompt, "--quality", "low", "--json"],
+    capture_output=True, text=True,
+)
+if result.returncode == 0:
+    data = json.loads(result.stdout)
+    image_paths = data["saved"]            # list[str]
+    cost = data["cost_estimate_usd"]
+elif result.returncode == 1:
+    raise RuntimeError("OpenAI API key missing — ask the user to configure it.")
+else:
+    err = json.loads(result.stdout) if result.stdout else {}
+    raise RuntimeError(err.get("error", result.stderr))
+```
+
+### Cross-Platform Script Path
+
+| OS | Typical path | Tip |
+|----|--------------|-----|
+| Linux / macOS | `~/.agents/skills/openai-image-generation/scripts/openai_generate.py` | Tilde expansion works in bash |
+| Windows (PowerShell) | `$env:USERPROFILE\.agents\skills\openai-image-generation\scripts\openai_generate.py` | Quote the path if the cwd contains spaces |
 
 ---
 
