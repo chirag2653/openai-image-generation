@@ -1,9 +1,20 @@
 ---
 name: openai-image-generation
-description: Generate images using OpenAI's gpt-image-2 model (released April 2026, "OpenAI's most capable image model"). ONLY activates when user EXPLICITLY mentions 'OpenAI', 'gpt-image', or uses /openai-image command. Supports size, quality, format, and multi-image generation. Image edits / reference images via /v1/images/edits are not yet implemented.
+description: Installable agent tool for generating images with OpenAI's gpt-image-2 model (April 2026 — OpenAI's most capable image model). Wraps a Python CLI that handles API auth, parameter validation, file I/O, and cost estimation — the agent composes one command with a prompt plus optional --size / --quality / --format / --n / --output flags and receives back saved file paths and a JSON metadata block (in --json mode). For any image task — logo, app icon, hero banner, social post, photo-realistic render, draft test, multi-variation set — the agent infers suitable parameters from task context and produces the artifact in a single subprocess call, then hands the saved path(s) to the next step. ACTIVATE when an image is needed AND OpenAI is the chosen provider: user mentions "OpenAI", "gpt-image", "gpt-image-2", invokes /openai-image, or a parent task has explicitly routed an image step here. DO NOT auto-trigger on generic "generate an image" requests with no provider specified — defer to whichever provider the user picks (other skills like gemini-image-generation cover the alternatives). Does NOT yet wrap /v1/images/edits (reference images, inpainting, image-to-image) — call the OpenAI API directly for those.
 ---
 
 # OpenAI Image Generation Skill
+
+## Tool Overview
+
+This skill is a thin, reliable wrapper that lets an AI agent generate an image with OpenAI's gpt-image-2 in a single CLI call. The agent supplies the prompt and any parameters that matter for the task (size, quality, format, count, output path); the script handles API key discovery (4-tier loader: process env → Windows User env → `.env.local` → `.env`), validates and forwards the request to `POST /v1/images/generations`, decodes the returned base64 payload, writes the file(s) to disk, and — in `--json` mode — emits a single JSON line on stdout with the saved path(s), key source, and cost estimate. Distinct exit codes (`0` ok, `1` missing key/SDK, `2` API failure, `3` empty response) let the caller branch deterministically.
+
+Practical recipe for an agent with task context (e.g. "I need a hero banner for the landing page"):
+1. Pick parameters from the use case — see the smart-defaults table in Step 2.
+2. Pick an output path — relative or absolute; parent dirs are auto-created.
+3. Run the script with `--json`, parse the JSON, use `saved[0]` (or `saved[]` for n>1) downstream.
+
+The skill is global (lives at `~/.agents/skills/openai-image-generation/`), so it's available across sessions and projects without per-project setup — the only requirement is an `OPENAI_API_KEY` discoverable from one of the four sources above. Image edits / reference images via `/v1/images/edits` are **not** wrapped here; for those, call the OpenAI API directly.
 
 ## Trigger Rules
 
