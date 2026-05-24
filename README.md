@@ -1,6 +1,5 @@
 # openai-image-generation
 
-[![CI](https://github.com/chirag2653/openai-image-generation/actions/workflows/ci.yml/badge.svg)](https://github.com/chirag2653/openai-image-generation/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 An installable [agent skill](https://github.com/obra/skills) that generates images with OpenAI's [`gpt-image-2`](https://developers.openai.com/api/docs/guides/image-generation) model — released April 21 2026, OpenAI's *"most capable image model."* It wraps a single, well-tested Python CLI so an AI agent (Claude Code, Cursor, Codex, etc.) can produce an image in one subprocess call and get back the saved path(s) plus a JSON metadata block.
@@ -19,7 +18,7 @@ The skill activates **only** on explicit "OpenAI" / "gpt-image" / `/openai-image
 npx skills add chirag2653/openai-image-generation -g -y
 ```
 
-After install, the skill appears as `openai-image-generation` in your agent's skill list. Only the `skills/openai-image-generation/` payload is copied onto your machine — the rest of this repo is project scaffolding.
+After install, the skill appears as `openai-image-generation` in your agent's skill list. Only the `skills/openai-image-generation/` payload is copied onto your machine.
 
 ## Usage (from inside an agent session)
 
@@ -91,15 +90,6 @@ If none are found, the script exits with code `1` and prints how to fix it. Insi
 | Exit `2`, "invalid parameters" | `--n` must be ≥ 1 and `--compression` must be 0–100. Fix the flag and re-run. |
 | Exit `3` | Transient — the API returned no images. Safe to retry once. |
 
-## Running the Tests
-
-The repo ships a self-contained offline test suite (stdlib `unittest`, a fake `openai` SDK injected via `sys.modules` — **no API key, no network, no extra dependencies**). This is exactly what CI runs on every push:
-
-```bash
-python -m unittest discover -s tests -v
-python -m py_compile skills/openai-image-generation/scripts/openai_generate.py
-```
-
 ## What's Not Built (Yet)
 
 - Image edits via `/v1/images/edits` (reference images, mask-based inpainting)
@@ -114,4 +104,3 @@ python -m py_compile skills/openai-image-generation/scripts/openai_generate.py
 - OpenAI image generation guide: https://developers.openai.com/api/docs/guides/image-generation
 - Prompting cookbook: https://developers.openai.com/cookbook/examples/multimodal/image-gen-models-prompting-guide
 - Skill workflow + trigger rules: [`skills/openai-image-generation/SKILL.md`](skills/openai-image-generation/SKILL.md)
-- Dev guide (for editing/contributing to the skill): [`AGENTS.md`](AGENTS.md)
