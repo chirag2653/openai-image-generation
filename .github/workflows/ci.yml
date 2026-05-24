@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Byte-compile the script
+        run: python -m py_compile skills/openai-image-generation/scripts/openai_generate.py
+
+      - name: Run offline test suite
+        # The suite injects a fake `openai` module via sys.modules, so it needs
+        # neither the real SDK nor an OPENAI_API_KEY — no secrets required.
+        run: python -m unittest discover -s tests -v

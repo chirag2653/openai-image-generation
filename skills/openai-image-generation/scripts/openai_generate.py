@@ -26,7 +26,8 @@ API Key (read-only — script never writes the key anywhere):
 Exit codes:
     0  success — file(s) saved
     1  key missing OR openai SDK not installed (stop and tell user how to fix)
-    2  API call failed (e.g. quota, invalid prompt, moderation rejection)
+    2  API call failed (e.g. quota, invalid prompt, moderation rejection) OR
+       invalid parameters caught locally (--n < 1, --compression out of 0-100)
     3  API returned no images (transient — safe to retry once)
 
 JSON mode output schema:
@@ -251,6 +252,16 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     json_mode = args.json_output
+
+    # Validate parameters that argparse can't express (cheap, fail fast before
+    # spending an API call). Mapped to exit code 2 — "invalid request".
+    if args.n < 1:
+        return emit_error(f"--n must be >= 1 (got {args.n}).", 2, json_mode)
+    if args.compression is not None and not (0 <= args.compression <= 100):
+        return emit_error(
+            f"--compression must be between 0 and 100 (got {args.compression}).",
+            2, json_mode,
+        )
 
     # Resolve output path (default if not provided)
     output_path = Path(args.output) if args.output else default_output_path(args.format)

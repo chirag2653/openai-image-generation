@@ -27,4 +27,4 @@ outputs/
 
 # Tool results / agent scratch
 .claude/
-574022b8-*/
+*.log

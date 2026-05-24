@@ -122,6 +122,12 @@ Cost reference (per image at 1024×1024): low $0.006 · medium $0.053 · high $0
 
 ## Execution
 
+### Prerequisites (first run only)
+
+- **Python 3.10+** on PATH.
+- **`openai` SDK** — if the script exits `1` saying the package is missing, run `pip install -r "[SKILL_FOLDER]/requirements.txt"` (or `pip install "openai>=1.55.0"`), then re-run.
+- **`OPENAI_API_KEY`** discoverable from one of the four sources in [API Key](#api-key). If absent, run the [Missing API Key — Conversational Recovery](#missing-api-key--conversational-recovery) flow.
+
 ### Script Location
 
 ```
@@ -192,8 +198,8 @@ Walk through Steps 1–5 of the Context Gathering Flow. Show the confirmation bl
 | Code | Meaning | Agent action |
 |------|---------|--------------|
 | `0` | Success — file(s) saved at returned paths | Use the saved paths |
-| `1` | API key missing OR `openai` SDK not installed | **Stop.** Tell user to set `OPENAI_API_KEY` (Windows User scope recommended) or `pip install -r requirements.txt`. Never write the key to a file yourself. |
-| `2` | API call failed (quota, invalid prompt, moderation rejection, network) | Surface the error message verbatim. Don't auto-retry — failure reasons differ. |
+| `1` | API key missing OR `openai` SDK not installed | **Stop and run the [Missing API Key — Conversational Recovery](#missing-api-key--conversational-recovery) flow.** If the stderr/error says the `openai` package is missing instead, tell the user to `pip install -r requirements.txt`. |
+| `2` | API call failed (quota, invalid prompt, moderation rejection, network) **OR** invalid parameters caught locally (`--n < 1`, `--compression` outside 0–100) | Surface the error message verbatim. If it's a local validation error, fix the flag and re-run. Otherwise don't auto-retry — failure reasons differ. |
 | `3` | API returned no images (rare, transient) | Safe to retry once with the same params. |
 
 ### `--json` Output Schema
@@ -278,26 +284,49 @@ python SCRIPT --prompt "Hero photo of a coffee cup on a wooden desk" \
 
 ## API Key
 
-The script auto-discovers `OPENAI_API_KEY` in this order:
+The script auto-discovers `OPENAI_API_KEY` in this order (first hit wins) and **never writes the key anywhere** — it only reads:
+
 1. Process env var `OPENAI_API_KEY`
-2. Windows User-scope env var (read via PowerShell — works in IDEs like Cursor that don't inherit env vars)
+2. Windows User/Machine-scope env var (read via PowerShell — works in IDEs like Cursor that don't inherit env vars set after launch)
 3. `.env.local` in the current working directory
 4. `.env` in the current working directory
 
-**If missing**, the script prints both fix options:
+Get a key from: https://platform.openai.com/settings/organization/api-keys
+(GPT Image models also require API **Organization Verification** — if you get a 403, that's usually the cause; check verification status.)
 
+### Missing API Key — Conversational Recovery
+
+When the script exits with code `1` because no key was found, **do not fail silently and do not invent a key.** Run this flow:
+
+**1. State plainly what happened.** Something like:
+
+> I couldn't find your `OPENAI_API_KEY` anywhere — not in this shell's environment, not in the Windows User/Machine env vars, and not in a `.env.local` or `.env` in the folder I'm running from (`<cwd>`). Here's how we can fix it:
+
+**2. Offer three paths and let the user choose.** Make it explicit that **they don't have to paste the key into the chat** if they'd rather not:
+
+| Option | What I (the agent) do | Key visible in chat? | Persistence |
+|--------|----------------------|----------------------|-------------|
+| **A — You paste it, I save it** | With your OK, I create a `.env.local` in this folder containing `OPENAI_API_KEY=<your key>`. It's already gitignored, so it won't be committed. | Yes — it lands in this transcript | Persists for this project |
+| **B — You set it yourself** (key never touches chat) | You create the `.env.local` (or `.env`) yourself, or set the permanent Windows User env var (recipe below). Tell me when done and I'll re-run. | No | Persists |
+| **C — Permanent, machine-wide** | You run the PowerShell one-liner below once, then restart the terminal. Best if you'll use this skill often. | No | Permanent (all projects) |
+
+**3. Provide the copy-paste recipes:**
+
+```powershell
+# Option C — set the Windows User env var permanently (run once, then restart the terminal):
+[System.Environment]::SetEnvironmentVariable('OPENAI_API_KEY','sk-...','User')
 ```
-Option A — Add to .env.local in your project folder:
-  OPENAI_API_KEY=sk-...
 
-Option B — Set Windows User env var permanently (PowerShell):
-  [System.Environment]::SetEnvironmentVariable('OPENAI_API_KEY','sk-...','User')
-  Then restart your terminal.
+```bash
+# Option A/B — a .env.local in the working folder (gitignored). One line:
+OPENAI_API_KEY=sk-...
 ```
 
-Get your key from: https://platform.openai.com/settings/organization/api-keys
-
-(GPT Image models also require API Organization Verification — if you get a 403, check verification status.)
+**4. Rules of conduct:**
+- **Never write the key to a file unless the user explicitly consents** (Option A). When you do, write only to `.env.local` (gitignored) — never to a tracked file, and never `git add` it.
+- **Never echo the key back** in chat after receiving it, and never put it in a commit, a log, or a `--json` field.
+- If the user picks Option B/C, just wait — re-run the same command once they confirm the key is in place.
+- A pasted key lives in the transcript; if the user is uneasy about that, steer them to Option B or C.
 
 ---
 
