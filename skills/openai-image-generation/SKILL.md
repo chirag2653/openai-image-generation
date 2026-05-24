@@ -246,10 +246,20 @@ else:
 
 ### Cross-Platform Script Path
 
-| OS | Typical path | Tip |
-|----|--------------|-----|
-| Linux / macOS | `~/.agents/skills/openai-image-generation/scripts/openai_generate.py` | Tilde expansion works in bash |
-| Windows (PowerShell) | `$env:USERPROFILE\.agents\skills\openai-image-generation\scripts\openai_generate.py` | Quote the path if the cwd contains spaces |
+**Default to the `~` form on every OS and shell:**
+
+```
+~/.agents/skills/openai-image-generation/scripts/openai_generate.py
+```
+
+`~` (and `$HOME`) expand in bash, Git Bash, zsh, **and** modern PowerShell, so this single form is the safest choice regardless of how the agent shells out. The skill source lives there (`~/.claude/skills/.../` is a symlink to it).
+
+| Shell | Path form | Note |
+|-------|-----------|------|
+| bash / Git Bash / zsh (any OS, **incl. Windows**) | `~/.agents/skills/openai-image-generation/scripts/openai_generate.py` | `~` and `$HOME` both expand. **This is the shell Claude Code's Bash tool uses on Windows.** |
+| PowerShell | `$HOME\.agents\skills\openai-image-generation\scripts\openai_generate.py` | `$env:USERPROFILE\...` also works *in PowerShell only*. Quote the path if the cwd has spaces. |
+
+> ⚠️ **`$env:USERPROFILE` expands only in PowerShell.** In bash / Git Bash it does **not** expand — the path collapses to a literal `:USERPROFILE\...`, resolves against the cwd, and Python fails with a cryptic `[Errno 22] Invalid argument` *before* the script's own exit-code handling can run. If you're in any doubt about the shell, use the `~` form above — it works everywhere.
 
 ---
 
