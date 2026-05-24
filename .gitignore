@@ -28,3 +28,11 @@ outputs/
 # Tool results / agent scratch
 .claude/
 *.log
+
+# Dev scaffolding — kept on disk locally, deliberately OUT of the public repo.
+# A public-facing skill repo ships only the installable payload (skills/),
+# a README.md (for discovery/SEO + human understanding), and LICENSE.
+/AGENTS.md
+/CLAUDE.md
+/tests/
+/.github/
