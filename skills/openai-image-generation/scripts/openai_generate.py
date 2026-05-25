@@ -12,6 +12,14 @@ Usage (programmatic / agent-native):
     python openai_generate.py --prompt "..." --json [options]
         → suppresses the banner; emits a single JSON object on stdout.
 
+Usage (no-cost pre-flight / setup check — no --prompt, no API call):
+    python openai_generate.py --preflight [--probe] [--json]
+        → reports API-key + openai-SDK readiness in one shot (lists ALL missing
+          prerequisites at once). --probe adds an opt-in auth check via
+          models.list() to catch invalid keys / unverified-org 403s before any
+          paid generation. Run this FIRST so setup gaps surface as setup, not as
+          a failed render.
+
 If --output is omitted, the script writes to:
     outputs/openai-image-YYYYMMDD-HHMMSS.png  (relative to current working dir)
 
@@ -24,8 +32,9 @@ API Key (read-only — script never writes the key anywhere):
       4. .env in the current working directory
 
 Exit codes:
-    0  success — file(s) saved
-    1  key missing OR openai SDK not installed (stop and tell user how to fix)
+    0  success — file(s) saved  (or, in --preflight, prerequisites all present)
+    1  key missing OR openai SDK not installed (stop and tell user how to fix);
+       in --preflight, one or more prerequisites missing (key / sdk / probe)
     2  API call failed (e.g. quota, invalid prompt, moderation rejection) OR
        invalid parameters caught locally (--n < 1, --compression out of 0-100)
     3  API returned no images (transient — safe to retry once)
@@ -36,6 +45,10 @@ JSON mode output schema:
               "format": "...", "n": N, "prompt": "...",
               "cost_estimate_usd": float}
     Failure: {"ok": false, "error": "...", "exit_code": N}
+
+    Pre-flight ready:     {"ok": true, "key_source": "...", "sdk": "<version>"}
+    Pre-flight not ready: {"ok": false, "missing": ["key", "sdk"],
+                           "key_source": null, "sdk": null, "hint": "..."}
 
 Reference: https://developers.openai.com/api/docs/guides/image-generation
 """
@@ -189,6 +202,133 @@ def load_api_key() -> tuple[str | None, str | None]:
 
 
 # =============================================================================
+# PREREQUISITE DETECTION (no-cost — never hits the paid image endpoint)
+# =============================================================================
+def detect_sdk() -> tuple[bool, str | None]:
+    """Return (present, version) for the openai SDK without importing OpenAI's
+    heavy client. Importable → (True, version-or-None); missing → (False, None).
+    """
+    try:
+        import openai  # noqa: F401
+    except ImportError:
+        return False, None
+    return True, getattr(openai, "__version__", None)
+
+
+def auth_probe(api_key: str) -> tuple[str, bool]:
+    """Lightweight, opt-in auth check via models.list() (a free GET — never the
+    paid image endpoint). Returns (status_message, ok). Surfaces invalid keys
+    and unverified-org 403s before a paid generation is attempted.
+    """
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return "openai SDK not importable", False
+    try:
+        OpenAI(api_key=api_key).models.list()
+    except Exception as exc:  # noqa: BLE001
+        return f"failed: {exc}", False
+    return "ok", True
+
+
+def _build_hint(missing: list[str]) -> str:
+    """One-line, copy-pasteable fix hint covering everything in `missing`."""
+    parts: list[str] = []
+    if "key" in missing:
+        parts.append("set OPENAI_API_KEY (e.g. add 'OPENAI_API_KEY=sk-...' to .env.local)")
+    if "sdk" in missing:
+        parts.append("pip install -r requirements.txt")
+    if "probe" in missing:
+        parts.append("verify the key is valid and your org is verified for gpt-image models")
+    return "; ".join(parts)
+
+
+def _print_fix_guidance(missing: list[str], stream) -> None:
+    """Print detailed, human-readable fix steps for each missing prerequisite."""
+    if "key" in missing:
+        print("- OPENAI_API_KEY not found.", file=stream)
+        print("  Looked in:", file=stream)
+        print("    1. process env OPENAI_API_KEY", file=stream)
+        print("    2. Windows User/Machine env (via PowerShell)", file=stream)
+        print("    3. .env.local in cwd", file=stream)
+        print("    4. .env in cwd", file=stream)
+        print("  Fix options:", file=stream)
+        print("    Option A - Add to .env.local in this folder:", file=stream)
+        print("      OPENAI_API_KEY=sk-...", file=stream)
+        print("    Option B - Set Windows User env var permanently (PowerShell):", file=stream)
+        print("      [System.Environment]::SetEnvironmentVariable("
+              "'OPENAI_API_KEY','sk-...','User')", file=stream)
+        print("      Then restart your terminal.", file=stream)
+    if "sdk" in missing:
+        if "key" in missing:
+            print("", file=stream)
+        print("- 'openai' package not installed.", file=stream)
+        print("  Fix: pip install -r requirements.txt  (or: pip install \"openai>=1.55.0\")",
+              file=stream)
+
+
+def run_preflight(json_mode: bool, probe: bool) -> int:
+    """No-cost readiness check. Reports API key + openai SDK (+ optional auth
+    probe) in a single shot, listing ALL missing prerequisites at once. Never
+    touches the paid image endpoint. Returns 0 (ready) or 1 (not ready)."""
+    api_key, key_source = load_api_key()
+    sdk_present, sdk_version = detect_sdk()
+
+    missing: list[str] = []
+    if not api_key:
+        missing.append("key")
+    if not sdk_present:
+        missing.append("sdk")
+
+    # Optional auth probe — only meaningful once key + SDK are both present.
+    probe_status: str | None = None
+    if probe and not missing:
+        probe_status, probe_ok = auth_probe(api_key)  # type: ignore[arg-type]
+        if not probe_ok:
+            missing.append("probe")
+
+    if not missing:
+        if json_mode:
+            payload: dict = {"ok": True, "key_source": key_source, "sdk": sdk_version}
+            if probe:
+                payload["probe"] = probe_status or "ok"
+            print(json.dumps(payload))
+        else:
+            print("Pre-flight: READY")
+            print(f"  API key:    present ({key_source})")
+            print(f"  openai SDK: present ({sdk_version or 'unknown version'})")
+            if probe:
+                print(f"  Auth probe: {probe_status or 'ok'}")
+        return 0
+
+    hint = _build_hint(missing)
+    if json_mode:
+        payload = {
+            "ok": False,
+            "missing": missing,
+            "key_source": key_source,
+            "sdk": sdk_version,
+            "hint": hint,
+        }
+        if probe_status is not None:
+            payload["probe"] = probe_status
+        print(json.dumps(payload))
+        print(f"Pre-flight: NOT READY - missing {', '.join(missing)}. {hint}", file=sys.stderr)
+    else:
+        print("Pre-flight: NOT READY\n", file=sys.stderr)
+        print(f"  API key:    {'present (' + str(key_source) + ')' if api_key else 'MISSING'}",
+              file=sys.stderr)
+        print(f"  openai SDK: "
+              f"{'present (' + str(sdk_version or 'unknown') + ')' if sdk_present else 'MISSING'}",
+              file=sys.stderr)
+        if probe_status is not None:
+            print(f"  Auth probe: {probe_status}", file=sys.stderr)
+        print("", file=sys.stderr)
+        _print_fix_guidance([m for m in missing if m in ("key", "sdk")], sys.stderr)
+    return 1
+
+
+# =============================================================================
 # OUTPUT HELPERS (json-mode aware)
 # =============================================================================
 def info(message: str, json_mode: bool) -> None:
@@ -214,8 +354,9 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--prompt", "-p", required=True,
-                        help="Text prompt describing the image")
+    parser.add_argument("--prompt", "-p", default=None,
+                        help="Text prompt describing the image "
+                             "(required unless --preflight)")
     parser.add_argument("--output", "-o", default=None,
                         help=(f"Output file path. If omitted, defaults to "
                               f"{DEFAULT_OUTPUT_DIR}/{DEFAULT_OUTPUT_PREFIX}-"
@@ -243,7 +384,22 @@ def parse_args() -> argparse.Namespace:
                         help="Emit a single JSON object to stdout instead of the "
                              "human banner. Use for programmatic / agent invocation. "
                              "Informational logs go to stderr in this mode.")
-    return parser.parse_args()
+    parser.add_argument("--preflight", "--check", "--doctor", action="store_true",
+                        dest="preflight",
+                        help="No-cost readiness check: report API key + openai SDK "
+                             "status and exit (0 ready / 1 not ready). No --prompt and "
+                             "no API call required. Run this before generating.")
+    parser.add_argument("--probe", action="store_true",
+                        help="With --preflight, also run an opt-in auth check via "
+                             "models.list() (a free call) to catch invalid keys / "
+                             "unverified-org 403s before any paid generation.")
+    args = parser.parse_args()
+    # --prompt is required for generation but not for --preflight. argparse can't
+    # express this conditional, so enforce it here (parser.error exits like a
+    # normal argparse failure).
+    if not args.preflight and not args.prompt:
+        parser.error("--prompt/-p is required (unless --preflight)")
+    return args
 
 
 # =============================================================================
@@ -252,6 +408,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     json_mode = args.json_output
+
+    # Step 0: no-cost pre-flight. Report key + SDK (+ optional probe) readiness
+    # and exit — never reaches the paid image endpoint.
+    if args.preflight:
+        return run_preflight(json_mode=json_mode, probe=args.probe)
 
     # Validate parameters that argparse can't express (cheap, fail fast before
     # spending an API call). Mapped to exit code 2 — "invalid request".
@@ -266,38 +427,31 @@ def main() -> int:
     # Resolve output path (default if not provided)
     output_path = Path(args.output) if args.output else default_output_path(args.format)
 
-    # Load API key
+    # Check BOTH prerequisites (API key + openai SDK) up front and, if either is
+    # missing, report ALL of them at once — so fixing the key doesn't immediately
+    # trip the SDK error on the next run (and vice versa). Same exit code (1) and
+    # JSON failure schema as before, so callers branch deterministically.
     api_key, key_source = load_api_key()
+    sdk_present, _sdk_version = detect_sdk()
+    missing: list[str] = []
     if not api_key:
-        if not json_mode:
-            print("ERROR: OPENAI_API_KEY not found.\n", file=sys.stderr)
-            print("Looked in:", file=sys.stderr)
-            print("  1. process env OPENAI_API_KEY", file=sys.stderr)
-            print("  2. Windows User/Machine env (via PowerShell)", file=sys.stderr)
-            print("  3. .env.local in cwd", file=sys.stderr)
-            print("  4. .env in cwd", file=sys.stderr)
-            print("\nFix options:", file=sys.stderr)
-            print("  Option A — Add to .env.local in this folder:", file=sys.stderr)
-            print("    OPENAI_API_KEY=sk-...", file=sys.stderr)
-            print("  Option B — Set Windows User env var permanently (PowerShell):", file=sys.stderr)
-            print("    [System.Environment]::SetEnvironmentVariable("
-                  "'OPENAI_API_KEY','sk-...','User')", file=sys.stderr)
-            print("    Then restart your terminal.", file=sys.stderr)
-            return 1
-        return emit_error(
-            "OPENAI_API_KEY not found. Looked in: process env, Windows User/Machine env, "
-            ".env.local in cwd, .env in cwd. Fix: set Windows User env var or add to .env.local.",
-            1, json_mode,
-        )
+        missing.append("key")
+    if not sdk_present:
+        missing.append("sdk")
+    if missing:
+        labels = {
+            "key": "OPENAI_API_KEY not found",
+            "sdk": "'openai' package not installed",
+        }
+        summary = "; ".join(labels[m] for m in missing)
+        if json_mode:
+            return emit_error(f"{summary}. Fix: {_build_hint(missing)}.", 1, json_mode)
+        print(f"ERROR: not ready to generate — {summary}.\n", file=sys.stderr)
+        _print_fix_guidance(missing, sys.stderr)
+        return 1
 
-    # Lazy import — defer heavy SDK import until after key check
-    try:
-        from openai import OpenAI
-    except ImportError:
-        return emit_error(
-            "'openai' package not installed. Run: pip install -r requirements.txt",
-            1, json_mode,
-        )
+    # SDK confirmed present above — this import won't fail.
+    from openai import OpenAI
 
     # Build kwargs (only include optionals when set, so SDK uses its defaults)
     kwargs: dict = {

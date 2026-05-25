@@ -31,6 +31,28 @@ The skill is global (lives at `~/.agents/skills/openai-image-generation/`), so i
 
 When the user invokes this skill, walk through these steps. Skip any step the user has already answered in their initial request.
 
+### Step 0: Pre-flight (run FIRST, before any other work)
+
+Before gathering context or composing a prompt, run the **no-cost pre-flight** so a missing key or SDK surfaces as *setup*, not as a failed render after all the work is done. It costs nothing (no image API call) and never prompts:
+
+```bash
+python SCRIPT --preflight --json
+```
+
+- **Exit `0`** → ready (`{"ok": true, "key_source": "...", "sdk": "<version>"}`). Proceed to Step 1.
+- **Exit `1`** → not ready. The JSON lists **every** missing prerequisite at once in `missing` (`"key"` and/or `"sdk"`) plus a `hint`. Resolve all of them before continuing:
+  - `"key"` present in `missing` → run the [Missing API Key — Conversational Recovery](#missing-api-key--conversational-recovery) flow.
+  - `"sdk"` present in `missing` → tell the user to `pip install -r "[SKILL_FOLDER]/requirements.txt"`.
+  - Both present → guide both fixes together (one setup pass, not two fail-and-retry cycles), then re-run `--preflight` to confirm.
+
+Optional: add `--probe` to also validate the key against the API (`models.list()`, a free call) and catch invalid keys / unverified-org `403`s *before* spending a paid generation:
+
+```bash
+python SCRIPT --preflight --probe --json
+```
+
+This reframes missing-key/SDK as setup that happens up front — never as a generation that errored.
+
 ### Step 1: Extract from User Input
 
 Parse the user's request and pull out what you can:
@@ -128,6 +150,8 @@ Cost reference (per image at 1024×1024): low $0.006 · medium $0.053 · high $0
 - **`openai` SDK** — if the script exits `1` saying the package is missing, run `pip install -r "[SKILL_FOLDER]/requirements.txt"` (or `pip install "openai>=1.55.0"`), then re-run.
 - **`OPENAI_API_KEY`** discoverable from one of the four sources in [API Key](#api-key). If absent, run the [Missing API Key — Conversational Recovery](#missing-api-key--conversational-recovery) flow.
 
+> **Best practice:** verify both with a single no-cost call up front — `python SCRIPT --preflight --json` (see [Step 0: Pre-flight](#step-0-pre-flight-run-first-before-any-other-work)). It reports the key and SDK together, so a brand-new environment is one setup pass instead of two sequential `exit 1` failures.
+
 ### Script Location
 
 ```
@@ -152,6 +176,9 @@ python "[SKILL_FOLDER]/scripts/openai_generate.py" \
     [--background auto|opaque] \
     [--moderation auto|low] \
     [--json]
+
+# No-cost pre-flight (no --prompt, no API call) — run before generating:
+python "[SKILL_FOLDER]/scripts/openai_generate.py" --preflight [--probe] [--json]
 ```
 
 ### Parameters
@@ -170,6 +197,8 @@ python "[SKILL_FOLDER]/scripts/openai_generate.py" \
 | `--background` | ❌ | — | `auto` / `opaque` (gpt-image-2 doesn't support transparent) |
 | `--moderation` | ❌ | `auto` | `auto` / `low` |
 | `--json` | ❌ | off | Programmatic mode — emits a single JSON object on stdout instead of the human banner. Informational logs route to stderr. Use this when an agent calls the script. |
+| `--preflight` | ❌ | off | No-cost readiness check (aliases: `--check`, `--doctor`). Reports API key + `openai` SDK status and exits `0` (ready) / `1` (not ready) — **no `--prompt` and no API call required**. See [Step 0](#step-0-pre-flight-run-first-before-any-other-work). |
+| `--probe` | ❌ | off | With `--preflight`, also run an opt-in auth check via `models.list()` (a free call) to catch invalid keys / unverified-org `403`s before any paid generation. |
 
 ---
 
@@ -179,9 +208,10 @@ This script is designed to be called two ways. **Pick the mode that matches your
 
 ### Mode A — Autonomous (no human in the loop)
 
-You're a parent agent calling this skill as a subroutine. Just run with `--json`:
+You're a parent agent calling this skill as a subroutine. Run the no-cost pre-flight once first to branch deterministically on setup before spending a generation, then run with `--json`:
 
 ```bash
+python SCRIPT --preflight --json   # exit 0 → ready; exit 1 → fix what's in `missing`, then re-run
 python SCRIPT --prompt "..." --quality low --json
 ```
 
@@ -197,8 +227,8 @@ Walk through Steps 1–5 of the Context Gathering Flow. Show the confirmation bl
 
 | Code | Meaning | Agent action |
 |------|---------|--------------|
-| `0` | Success — file(s) saved at returned paths | Use the saved paths |
-| `1` | API key missing OR `openai` SDK not installed | **Stop and run the [Missing API Key — Conversational Recovery](#missing-api-key--conversational-recovery) flow.** If the stderr/error says the `openai` package is missing instead, tell the user to `pip install -r requirements.txt`. |
+| `0` | Success — file(s) saved at returned paths (or, with `--preflight`, all prerequisites present) | Use the saved paths |
+| `1` | API key missing OR `openai` SDK not installed (with `--preflight`, one or more prerequisites missing — see `missing[]`) | **Stop and fix everything listed.** Run the [Missing API Key — Conversational Recovery](#missing-api-key--conversational-recovery) flow if the key is missing, and `pip install -r requirements.txt` if the `openai` package is missing. The error/`missing` field reports **both** at once, so fix them together rather than one-at-a-time. |
 | `2` | API call failed (quota, invalid prompt, moderation rejection, network) **OR** invalid parameters caught locally (`--n < 1`, `--compression` outside 0–100) | Surface the error message verbatim. If it's a local validation error, fix the flag and re-run. Otherwise don't auto-retry — failure reasons differ. |
 | `3` | API returned no images (rare, transient) | Safe to retry once with the same params. |
 
@@ -224,6 +254,18 @@ Walk through Steps 1–5 of the Context Gathering Flow. Show the confirmation bl
 ```json
 { "ok": false, "error": "<message>", "exit_code": 2 }
 ```
+
+**Pre-flight** (`--preflight --json`):
+```json
+// exit 0 — ready
+{ "ok": true, "key_source": "Windows User env", "sdk": "1.97.1" }
+
+// exit 1 — not ready (lists EVERYTHING missing at once)
+{ "ok": false, "missing": ["key", "sdk"], "key_source": null, "sdk": null,
+  "hint": "set OPENAI_API_KEY (e.g. add 'OPENAI_API_KEY=sk-...' to .env.local); pip install -r requirements.txt" }
+```
+
+With `--probe`, a `"probe"` field is added (`"ok"` or `"failed: <reason>"`); a failed probe adds `"probe"` to `missing` and yields exit `1`.
 
 ### Programmatic Invocation Example (Python)
 

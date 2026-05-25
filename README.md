@@ -42,6 +42,16 @@ python skills/openai-image-generation/scripts/openai_generate.py \
 
 The script auto-saves to `outputs/openai-image-YYYYMMDD-HHMMSS.png` if `--output` is omitted, and resolves `OPENAI_API_KEY` from the process env, Windows User env, `.env.local`, or `.env` (in that order).
 
+## Pre-flight Check
+
+Before a first generation, verify your setup with a single no-cost call (no `--prompt`, no image API call):
+
+```bash
+python skills/openai-image-generation/scripts/openai_generate.py --preflight --json
+```
+
+It checks the API key **and** the `openai` SDK together and reports both at once — exit `0` when ready (`{"ok": true, "key_source": "...", "sdk": "1.97.1"}`), or exit `1` listing everything missing (`{"ok": false, "missing": ["key", "sdk"], "hint": "..."}`). This turns a brand-new environment into one setup pass instead of two sequential `exit 1` failures discovered mid-generation. Add `--probe` to also validate the key against the API (a free `models.list()` call) and catch invalid keys / unverified-org `403`s before spending credit.
+
 ## Available Knobs
 
 | Flag | Required | Default | Notes |
@@ -56,6 +66,8 @@ The script auto-saves to `outputs/openai-image-YYYYMMDD-HHMMSS.png` if `--output
 | `--background` | ❌ | — | `auto` / `opaque` (gpt-image-2 doesn't support transparent) |
 | `--moderation` | ❌ | `auto` | `auto` / `low` |
 | `--model` | ❌ | `gpt-image-2` | Override only if you need a legacy model |
+| `--preflight` | ❌ | off | No-cost readiness check (aliases `--check` / `--doctor`): reports API key + `openai` SDK status and exits `0`/`1` — no `--prompt`, no API call. See [Pre-flight Check](#pre-flight-check). |
+| `--probe` | ❌ | off | With `--preflight`, also validate the key via `models.list()` (a free call) to catch invalid keys / unverified-org `403`s before any paid generation. |
 
 ## Cost Reference
 
