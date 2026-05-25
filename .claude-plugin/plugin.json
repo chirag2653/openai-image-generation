@@ -1,0 +1,10 @@
+{
+  "name": "openai-image-generation",
+  "description": "Generate images with OpenAI's gpt-image-2 via a tested Python CLI — --json mode, exit-code contract, and 4-tier API-key discovery, driven from SKILL.md.",
+  "author": {
+    "name": "Chirag Jain",
+    "url": "https://github.com/chirag2653"
+  },
+  "homepage": "https://github.com/chirag2653/openai-image-generation",
+  "license": "MIT"
+}
