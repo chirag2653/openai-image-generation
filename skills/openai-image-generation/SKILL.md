@@ -14,7 +14,7 @@ Practical recipe for an agent with task context (e.g. "I need a hero banner for 
 2. Pick an output path — relative or absolute; parent dirs are auto-created.
 3. Run the script with `--json`, parse the JSON, use `saved[0]` (or `saved[]` for n>1) downstream.
 
-The skill is global (lives at `~/.agents/skills/openai-image-generation/`), so it's available across sessions and projects without per-project setup — the only requirement is an `OPENAI_API_KEY` discoverable from one of the four sources above. Image edits / reference images via `/v1/images/edits` are **not** wrapped here; for those, call the OpenAI API directly.
+The skill is global (installed under `~/.agents/skills/openai-image-generation/` via `npx skills`, or under the plugin cache when installed as a Claude Code plugin — see [Script Location](#script-location--resolve-once-into-script-then-reuse-it)), so it's available across sessions and projects without per-project setup — the only requirement is an `OPENAI_API_KEY` discoverable from one of the four sources above. Image edits / reference images via `/v1/images/edits` are **not** wrapped here; for those, call the OpenAI API directly.
 
 ## Trigger Rules
 
@@ -36,19 +36,19 @@ When the user invokes this skill, walk through these steps. Skip any step the us
 Before gathering context or composing a prompt, run the **no-cost pre-flight** so a missing key or SDK surfaces as *setup*, not as a failed render after all the work is done. It costs nothing (no image API call) and never prompts:
 
 ```bash
-python SCRIPT --preflight --json
+python "$SCRIPT" --preflight --json
 ```
 
 - **Exit `0`** → ready (`{"ok": true, "key_source": "...", "sdk": "<version>"}`). Proceed to Step 1.
 - **Exit `1`** → not ready. The JSON lists **every** missing prerequisite at once in `missing` (`"key"` and/or `"sdk"`) plus a `hint`. Resolve all of them before continuing:
   - `"key"` present in `missing` → run the [Missing API Key — Conversational Recovery](#missing-api-key--conversational-recovery) flow.
-  - `"sdk"` present in `missing` → tell the user to `pip install -r "[SKILL_FOLDER]/requirements.txt"`.
+  - `"sdk"` present in `missing` → tell the user to `pip install -r "$dir/requirements.txt"`.
   - Both present → guide both fixes together (one setup pass, not two fail-and-retry cycles), then re-run `--preflight` to confirm.
 
 Optional: add `--probe` to also validate the key against the API (`models.list()`, a free call) and catch invalid keys / unverified-org `403`s *before* spending a paid generation:
 
 ```bash
-python SCRIPT --preflight --probe --json
+python "$SCRIPT" --preflight --probe --json
 ```
 
 This reframes missing-key/SDK as setup that happens up front — never as a generation that errored.
@@ -147,25 +147,33 @@ Cost reference (per image at 1024×1024): low $0.006 · medium $0.053 · high $0
 ### Prerequisites (first run only)
 
 - **Python 3.10+** on PATH.
-- **`openai` SDK** — if the script exits `1` saying the package is missing, run `pip install -r "[SKILL_FOLDER]/requirements.txt"` (or `pip install "openai>=1.55.0"`), then re-run.
+- **`openai` SDK** — if the script exits `1` saying the package is missing, run `pip install -r "$dir/requirements.txt"` (or `pip install "openai>=1.55.0"`), then re-run.
 - **`OPENAI_API_KEY`** discoverable from one of the four sources in [API Key](#api-key). If absent, run the [Missing API Key — Conversational Recovery](#missing-api-key--conversational-recovery) flow.
 
-> **Best practice:** verify both with a single no-cost call up front — `python SCRIPT --preflight --json` (see [Step 0: Pre-flight](#step-0-pre-flight-run-first-before-any-other-work)). It reports the key and SDK together, so a brand-new environment is one setup pass instead of two sequential `exit 1` failures.
+> **Best practice:** verify both with a single no-cost call up front — `python "$SCRIPT" --preflight --json` (see [Step 0: Pre-flight](#step-0-pre-flight-run-first-before-any-other-work)). It reports the key and SDK together, so a brand-new environment is one setup pass instead of two sequential `exit 1` failures.
 
-### Script Location
+### Script Location — resolve ONCE into `SCRIPT`, then reuse it
 
+This skill ships through two channels that install to **different** locations, so **don't hardcode a path** — resolve it once and reuse `$SCRIPT`:
+
+- **Claude Code plugin** (`/plugin install`) → bundled under the plugin cache, e.g. `~/.claude/plugins/cache/<plugin-id>/skills/openai-image-generation/`. Claude Code exposes the plugin's root as `$CLAUDE_PLUGIN_ROOT`.
+- **`npx skills`** → `~/.agents/skills/openai-image-generation/` (with `~/.claude/skills/...` as a symlink to it).
+
+Run this resolver first (bash / Git Bash — the shell Claude Code uses on Windows):
+
+```bash
+dir="${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/skills/openai-image-generation}"
+[ -d "$dir" ] || dir="$HOME/.agents/skills/openai-image-generation"
+[ -d "$dir" ] || dir="$(find "$HOME/.claude/plugins/cache" -type d -path '*skills/openai-image-generation' 2>/dev/null | head -1)"
+SCRIPT="$dir/scripts/openai_generate.py"
 ```
-[SKILL_FOLDER]/scripts/openai_generate.py
-```
 
-For Claude Code, the skill folder is typically:
-- `~/.claude/skills/openai-image-generation/` (symlink)
-- `~/.agents/skills/openai-image-generation/` (source)
+Every command below (and in the CLI Cookbook) uses `"$SCRIPT"` — run the resolver first so it's set.
 
 ### Run Command
 
 ```bash
-python "[SKILL_FOLDER]/scripts/openai_generate.py" \
+python "$SCRIPT" \
     --prompt "FULL_PROMPT" \
     [--output "PATH"] \
     [--size "WIDTHxHEIGHT"] \
@@ -178,7 +186,7 @@ python "[SKILL_FOLDER]/scripts/openai_generate.py" \
     [--json]
 
 # No-cost pre-flight (no --prompt, no API call) — run before generating:
-python "[SKILL_FOLDER]/scripts/openai_generate.py" --preflight [--probe] [--json]
+python "$SCRIPT" --preflight [--probe] [--json]
 ```
 
 ### Parameters
@@ -211,8 +219,8 @@ This script is designed to be called two ways. **Pick the mode that matches your
 You're a parent agent calling this skill as a subroutine. Run the no-cost pre-flight once first to branch deterministically on setup before spending a generation, then run with `--json`:
 
 ```bash
-python SCRIPT --preflight --json   # exit 0 → ready; exit 1 → fix what's in `missing`, then re-run
-python SCRIPT --prompt "..." --quality low --json
+python "$SCRIPT" --preflight --json   # exit 0 → ready; exit 1 → fix what's in `missing`, then re-run
+python "$SCRIPT" --prompt "..." --quality low --json
 ```
 
 - All informational output goes to **stderr**.
@@ -288,45 +296,41 @@ else:
 
 ### Cross-Platform Script Path
 
-**Default to the `~` form on every OS and shell:**
+Resolve `SCRIPT` once with the resolver in [Script Location](#script-location--resolve-once-into-script-then-reuse-it), then pass `"$SCRIPT"` — it already holds the absolute path for whichever install mode is in play, so you never type the install dir by hand.
 
+PowerShell equivalent of the resolver:
+
+```powershell
+$dir = if ($env:CLAUDE_PLUGIN_ROOT) { "$env:CLAUDE_PLUGIN_ROOT\skills\openai-image-generation" } else { "$env:USERPROFILE\.agents\skills\openai-image-generation" }
+$SCRIPT = "$dir\scripts\openai_generate.py"
 ```
-~/.agents/skills/openai-image-generation/scripts/openai_generate.py
-```
 
-`~` (and `$HOME`) expand in bash, Git Bash, zsh, **and** modern PowerShell, so this single form is the safest choice regardless of how the agent shells out. The skill source lives there (`~/.claude/skills/.../` is a symlink to it).
-
-| Shell | Path form | Note |
-|-------|-----------|------|
-| bash / Git Bash / zsh (any OS, **incl. Windows**) | `~/.agents/skills/openai-image-generation/scripts/openai_generate.py` | `~` and `$HOME` both expand. **This is the shell Claude Code's Bash tool uses on Windows.** |
-| PowerShell | `$HOME\.agents\skills\openai-image-generation\scripts\openai_generate.py` | `$env:USERPROFILE\...` also works *in PowerShell only*. Quote the path if the cwd has spaces. |
-
-> ⚠️ **`$env:USERPROFILE` expands only in PowerShell.** In bash / Git Bash it does **not** expand — the path collapses to a literal `:USERPROFILE\...`, resolves against the cwd, and Python fails with a cryptic `[Errno 22] Invalid argument` *before* the script's own exit-code handling can run. If you're in any doubt about the shell, use the `~` form above — it works everywhere.
+> ⚠️ **Don't mix shell idioms.** `$env:USERPROFILE` expands only in PowerShell; in bash / Git Bash it collapses to a literal `:USERPROFILE\...` and Python fails with a cryptic `[Errno 22] Invalid argument`. Use the bash resolver in a bash shell and the PowerShell resolver in PowerShell — both set `SCRIPT` to a quoted absolute path that works regardless of cwd.
 
 ---
 
 ## CLI Cookbook
 
-Copy-pasteable invocations for the most common scenarios. Replace `SCRIPT` with the actual script path (typically `~/.agents/skills/openai-image-generation/scripts/openai_generate.py`). Only `--prompt` is required; everything else has defaults.
+Copy-pasteable invocations for the most common scenarios. `SCRIPT` is set by the resolver in [Script Location](#script-location--resolve-once-into-script-then-reuse-it) — run it first, then reuse `"$SCRIPT"`. Only `--prompt` is required; everything else has defaults.
 
 ```bash
 # Cheapest test (~$0.006) — verify setup with a throwaway image
-python SCRIPT --prompt "yellow circle on blue background" --quality low
+python "$SCRIPT" --prompt "yellow circle on blue background" --quality low
 
 # Logo (medium quality, default 1024×1024 png)
-python SCRIPT --prompt "Modern minimalist logo for AcmeAI, blue geometric gradient" \
+python "$SCRIPT" --prompt "Modern minimalist logo for AcmeAI, blue geometric gradient" \
     --quality medium
 
 # Hero banner (landscape, high quality, custom save path)
-python SCRIPT --prompt "Cinematic mountain valley at sunrise, golden light" \
+python "$SCRIPT" --prompt "Cinematic mountain valley at sunrise, golden light" \
     --size 1536x1024 --quality high --output assets/hero.png
 
 # Multiple variations in one call (saved as icon_1.png, icon_2.png, icon_3.png)
-python SCRIPT --prompt "App icon for a meditation app, soft gradients" \
+python "$SCRIPT" --prompt "App icon for a meditation app, soft gradients" \
     --n 3 --output outputs/icon.png
 
 # Web-ready compressed JPEG
-python SCRIPT --prompt "Hero photo of a coffee cup on a wooden desk" \
+python "$SCRIPT" --prompt "Hero photo of a coffee cup on a wooden desk" \
     --format jpeg --compression 75 --output public/img/hero.jpg
 ```
 
