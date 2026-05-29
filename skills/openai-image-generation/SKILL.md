@@ -1,6 +1,6 @@
 ---
 name: openai-image-generation
-description: Installable agent tool for generating images with OpenAI's gpt-image-2 model (April 2026 — OpenAI's most capable image model). Wraps a Python CLI that handles API auth, parameter validation, file I/O, and cost estimation — the agent composes one command with a prompt plus optional --size / --quality / --format / --n / --output flags and receives back saved file paths and a JSON metadata block (in --json mode). For any image task — logo, app icon, hero banner, social post, photo-realistic render, draft test, multi-variation set — the agent infers suitable parameters from task context and produces the artifact in a single subprocess call, then hands the saved path(s) to the next step. ACTIVATE when an image is needed AND OpenAI is the chosen provider — user mentions "OpenAI", "gpt-image", "gpt-image-2", invokes /openai-image, or a parent task has explicitly routed an image step here. DO NOT auto-trigger on generic "generate an image" requests with no provider specified — defer to whichever provider the user picks (other skills like gemini-image-generation cover the alternatives). Does NOT yet wrap /v1/images/edits (reference images, inpainting, image-to-image) — call the OpenAI API directly for those.
+description: Installable agent tool for generating images with OpenAI's gpt-image-2 model (April 2026 — OpenAI's most capable image model). Wraps a Python CLI that handles API auth, parameter validation, file I/O, and cost estimation — the agent composes one command with a prompt plus optional --size / --quality / --format / --n / --output flags and receives back saved file paths and a JSON metadata block (in --json mode). For any image task — logo, app icon, hero banner, social post, photo-realistic render, draft test, multi-variation set — the agent infers suitable parameters from task context and produces the artifact in a single subprocess call, then hands the saved path(s) to the next step. ACTIVATE when an image is needed AND OpenAI is the chosen provider — user mentions "OpenAI", "gpt-image", "gpt-image-2", invokes /openai-image, or a parent task has explicitly routed an image step here. DO NOT auto-trigger on generic "generate an image" requests with no provider specified — defer to whichever provider the user picks (other skills like gemini-image-generation cover the alternatives). Does NOT yet wrap /v1/images/edits (reference images, inpainting, image-to-image) — call the OpenAI API directly for those. Also activate to collect user feedback ABOUT this skill — phrases like "give feedback on the openai image skill" or "report a bug in this skill" — and file it as a GitHub issue (see feedback.md).
 ---
 
 # OpenAI Image Generation Skill
@@ -462,6 +462,14 @@ OPENAI_API_KEY=sk-...
 **User:** "/openai-image quick test of a yellow circle on blue background"
 
 **Agent:** Detects "quick test" → `low` quality, `1024x1024`, default output filename. Optionally skip confirmation for `low` drafts and run directly.
+
+---
+
+## Giving feedback on this skill
+
+This skill is maintained openly. If the user wants to report a bug, suggest an improvement, or give feedback **about the skill itself** (not about an image's content), turn it into a GitHub issue on the source repo (`chirag2653/openai-image-generation`) so it can be triaged and fixed — users then pick up the fix via the normal update path.
+
+**Only on an explicit feedback request.** The full flow — compose a structured issue, run a privacy gate (never leak the prompt, file paths, or API key to a public repo), then submit via `gh` or a pre-filled-URL fallback — lives in [`feedback.md`](feedback.md) next to this file. Read it when feedback is requested.
 
 ---
 
