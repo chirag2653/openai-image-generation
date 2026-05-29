@@ -31,27 +31,51 @@ The skill is global (installed under `~/.agents/skills/openai-image-generation/`
 
 When the user invokes this skill, walk through these steps. Skip any step the user has already answered in their initial request.
 
-### Step 0: Pre-flight (run FIRST, before any other work)
+### Step 0: First-Run Bootstrap (run FIRST, before any other work)
 
-Before gathering context or composing a prompt, run the **no-cost pre-flight** so a missing key or SDK surfaces as *setup*, not as a failed render after all the work is done. It costs nothing (no image API call) and never prompts:
+This skill is built to be **self-setting-up on a brand-new machine**. Before gathering context or composing a prompt, run the bootstrap so any gap surfaces as *setup* — never as a failed render after all the work is done. The whole sequence costs nothing (no image API call). The principle: **silently fix everything the skill can fix itself; ask the user only for the one thing it genuinely can't — the API key.**
 
-```bash
-python "$SCRIPT" --preflight --json
-```
+**0a. Resolve the script path.** Run the resolver in [Script Location](#script-location--resolve-once-into-script-then-reuse-it) so `$SCRIPT` and `$dir` are set.
 
-- **Exit `0`** → ready (`{"ok": true, "key_source": "...", "sdk": "<version>"}`). Proceed to Step 1.
-- **Exit `1`** → not ready. The JSON lists **every** missing prerequisite at once in `missing` (`"key"` and/or `"sdk"`) plus a `hint`. Resolve all of them before continuing:
-  - `"key"` present in `missing` → run the [Missing API Key — Conversational Recovery](#missing-api-key--conversational-recovery) flow.
-  - `"sdk"` present in `missing` → tell the user to `pip install -r "$dir/requirements.txt"`.
-  - Both present → guide both fixes together (one setup pass, not two fail-and-retry cycles), then re-run `--preflight` to confirm.
-
-Optional: add `--probe` to also validate the key against the API (`models.list()`, a free call) and catch invalid keys / unverified-org `403`s *before* spending a paid generation:
+**0b. Find a working Python (≥3.10).** A fresh box may expose Python as `python`, `py -3`, or `python3` — and on Windows a bare `python` can be a Microsoft-Store shim that does nothing. Pick the first that actually prints a 3.10+ version, and reuse it as `$PY` everywhere below:
 
 ```bash
-python "$SCRIPT" --preflight --probe --json
+for c in "python" "py -3" "python3"; do
+  v="$($c -c 'import sys;print(sys.version_info[:2]>=(3,10))' 2>/dev/null)"
+  [ "$v" = "True" ] && PY="$c" && break
+done
 ```
 
-This reframes missing-key/SDK as setup that happens up front — never as a generation that errored.
+If none works, Python itself is missing or too old — this is the rare thing the skill can't install silently. Tell the user plainly (`Python 3.10+ isn't on PATH`) and point them to https://www.python.org/downloads/ (or `winget install Python.Python.3.12` on Windows), then stop until they confirm.
+
+**0c. Run the no-cost pre-flight:**
+
+```bash
+$PY "$SCRIPT" --preflight --json
+```
+
+- **Exit `0`** → ready (`{"ok": true, "key_source": "...", "sdk": "<version>"}`). Proceed silently to Step 1 — say nothing about setup; it just works.
+- **Exit `1`** → not ready. The JSON lists **every** missing prerequisite at once in `missing` (`"key"` and/or `"sdk"`) plus a `hint`. Resolve them in this order, then re-run `--preflight` to confirm:
+
+  **If `"sdk"` is in `missing` → install it yourself, don't ask.** The `openai` SDK is a harmless, gitignored Python package — exactly the kind of thing the skill should fix on its own. Run:
+
+  ```bash
+  $PY "$SCRIPT" --install-deps --json
+  ```
+
+  This installs the bundled `requirements.txt` into **the same interpreter** (`sys.executable -m pip`), so it can't land in a different Python than the one that runs the script — the classic "I pip-installed it but it's still missing" trap. Exit `0` → installed (or already present); exit `1` → surface the pip error and fall back to telling the user to run `$PY -m pip install -r "$dir/requirements.txt"`.
+
+  **If `"key"` is in `missing` → run the [Missing API Key — Conversational Recovery](#missing-api-key--conversational-recovery) flow.** This is the one prerequisite only the user can supply, so this is where you bring them into the loop with `AskUserQuestion`.
+
+  **If both are missing → fix the SDK silently first, then ask for the key** — one clean setup pass, not two fail-and-retry cycles.
+
+**0d. (Optional) Validate the key against the API** with a free `models.list()` call to catch an invalid key / unverified-org `403` *before* spending a paid generation:
+
+```bash
+$PY "$SCRIPT" --preflight --probe --json
+```
+
+> Throughout the rest of this doc commands are written as `python "$SCRIPT" ...` for brevity; on a machine where bare `python` isn't the right launcher, use the `$PY` you resolved in 0b instead.
 
 ### Step 1: Extract from User Input
 
@@ -146,11 +170,15 @@ Cost reference (per image at 1024×1024): low $0.006 · medium $0.053 · high $0
 
 ### Prerequisites (first run only)
 
-- **Python 3.10+** on PATH.
-- **`openai` SDK** — if the script exits `1` saying the package is missing, run `pip install -r "$dir/requirements.txt"` (or `pip install "openai>=1.55.0"`), then re-run.
-- **`OPENAI_API_KEY`** discoverable from one of the four sources in [API Key](#api-key). If absent, run the [Missing API Key — Conversational Recovery](#missing-api-key--conversational-recovery) flow.
+The [Step 0 bootstrap](#step-0-first-run-bootstrap-run-first-before-any-other-work) handles all three automatically — this is what it's checking and how each gets resolved:
 
-> **Best practice:** verify both with a single no-cost call up front — `python "$SCRIPT" --preflight --json` (see [Step 0: Pre-flight](#step-0-pre-flight-run-first-before-any-other-work)). It reports the key and SDK together, so a brand-new environment is one setup pass instead of two sequential `exit 1` failures.
+| Prerequisite | Who fixes it | How |
+|--------------|--------------|-----|
+| **Python 3.10+** on PATH | User (rare) | Detected in 0b. If missing, the skill can't self-install it — point the user at python.org / `winget` and wait. |
+| **`openai` SDK** | **The skill, silently** | If preflight reports `sdk` missing, run `python "$SCRIPT" --install-deps` — installs into the same interpreter. No need to ask the user. |
+| **`OPENAI_API_KEY`** | User (via `AskUserQuestion`) | The one prerequisite the skill genuinely can't self-provide. Run the [Missing API Key — Conversational Recovery](#missing-api-key--conversational-recovery) flow. |
+
+> **Best practice:** verify everything with one no-cost call up front — `python "$SCRIPT" --preflight --json`. It reports key + SDK together, so a brand-new environment is one setup pass, not a string of mid-task failures.
 
 ### Script Location — resolve ONCE into `SCRIPT`, then reuse it
 
@@ -185,8 +213,9 @@ python "$SCRIPT" \
     [--moderation auto|low] \
     [--json]
 
-# No-cost pre-flight (no --prompt, no API call) — run before generating:
-python "$SCRIPT" --preflight [--probe] [--json]
+# No-cost setup modes (no --prompt, no API call) — run before generating:
+python "$SCRIPT" --preflight [--probe] [--json]   # readiness check
+python "$SCRIPT" --install-deps [--json]          # self-install the openai SDK
 ```
 
 ### Parameters
@@ -205,8 +234,9 @@ python "$SCRIPT" --preflight [--probe] [--json]
 | `--background` | ❌ | — | `auto` / `opaque` (gpt-image-2 doesn't support transparent) |
 | `--moderation` | ❌ | `auto` | `auto` / `low` |
 | `--json` | ❌ | off | Programmatic mode — emits a single JSON object on stdout instead of the human banner. Informational logs route to stderr. Use this when an agent calls the script. |
-| `--preflight` | ❌ | off | No-cost readiness check (aliases: `--check`, `--doctor`). Reports API key + `openai` SDK status and exits `0` (ready) / `1` (not ready) — **no `--prompt` and no API call required**. See [Step 0](#step-0-pre-flight-run-first-before-any-other-work). |
+| `--preflight` | ❌ | off | No-cost readiness check (aliases: `--check`, `--doctor`). Reports API key + `openai` SDK status and exits `0` (ready) / `1` (not ready) — **no `--prompt` and no API call required**. See [Step 0](#step-0-first-run-bootstrap-run-first-before-any-other-work). |
 | `--probe` | ❌ | off | With `--preflight`, also run an opt-in auth check via `models.list()` (a free call) to catch invalid keys / unverified-org `403`s before any paid generation. |
+| `--install-deps` | ❌ | off | Self-bootstrap (alias `--setup`): install the bundled `requirements.txt` (the `openai` SDK) into **this** interpreter via `sys.executable -m pip`, then exit. No `--prompt`, no API call. Idempotent — no-op if the SDK is already present. Use this to auto-fix an `sdk`-missing pre-flight. |
 
 ---
 
@@ -216,10 +246,14 @@ This script is designed to be called two ways. **Pick the mode that matches your
 
 ### Mode A — Autonomous (no human in the loop)
 
-You're a parent agent calling this skill as a subroutine. Run the no-cost pre-flight once first to branch deterministically on setup before spending a generation, then run with `--json`:
+You're a parent agent calling this skill as a subroutine. Run the no-cost pre-flight once first to branch deterministically on setup before spending a generation, auto-install the SDK if it's the only gap, then run with `--json`:
 
 ```bash
-python "$SCRIPT" --preflight --json   # exit 0 → ready; exit 1 → fix what's in `missing`, then re-run
+python "$SCRIPT" --preflight --json        # exit 0 → ready
+# exit 1 with "sdk" in missing → self-install, then re-check:
+python "$SCRIPT" --install-deps --json && python "$SCRIPT" --preflight --json
+# exit 1 with "key" in missing → can't self-fix headlessly; fail with the hint so
+#   the orchestrator (or a human upstream) sets OPENAI_API_KEY, then retry.
 python "$SCRIPT" --prompt "..." --quality low --json
 ```
 
@@ -235,8 +269,8 @@ Walk through Steps 1–5 of the Context Gathering Flow. Show the confirmation bl
 
 | Code | Meaning | Agent action |
 |------|---------|--------------|
-| `0` | Success — file(s) saved at returned paths (or, with `--preflight`, all prerequisites present) | Use the saved paths |
-| `1` | API key missing OR `openai` SDK not installed (with `--preflight`, one or more prerequisites missing — see `missing[]`) | **Stop and fix everything listed.** Run the [Missing API Key — Conversational Recovery](#missing-api-key--conversational-recovery) flow if the key is missing, and `pip install -r requirements.txt` if the `openai` package is missing. The error/`missing` field reports **both** at once, so fix them together rather than one-at-a-time. |
+| `0` | Success — file(s) saved at returned paths (or, with `--preflight`, all prerequisites present; or, with `--install-deps`, the SDK installed/already present) | Use the saved paths |
+| `1` | API key missing OR `openai` SDK not installed (with `--preflight`, one or more prerequisites missing — see `missing[]`; with `--install-deps`, the pip install failed) | **Stop and fix everything listed.** For a missing `sdk`, run `python "$SCRIPT" --install-deps` (auto-installs into this interpreter). For a missing `key`, run the [Missing API Key — Conversational Recovery](#missing-api-key--conversational-recovery) flow. The error/`missing` field reports **both** at once, so fix them together — SDK silently, key via `AskUserQuestion`. |
 | `2` | API call failed (quota, invalid prompt, moderation rejection, network) **OR** invalid parameters caught locally (`--n < 1`, `--compression` outside 0–100) | Surface the error message verbatim. If it's a local validation error, fix the flag and re-run. Otherwise don't auto-retry — failure reasons differ. |
 | `3` | API returned no images (rare, transient) | Safe to retry once with the same params. |
 
@@ -274,6 +308,16 @@ Walk through Steps 1–5 of the Context Gathering Flow. Show the confirmation bl
 ```
 
 With `--probe`, a `"probe"` field is added (`"ok"` or `"failed: <reason>"`); a failed probe adds `"probe"` to `missing` and yields exit `1`.
+
+**Self-install** (`--install-deps --json`):
+```json
+// exit 0 — installed now
+{ "ok": true, "installed": true, "sdk": "1.97.1" }
+// exit 0 — was already present (no-op)
+{ "ok": true, "installed": false, "detail": "openai SDK already present" }
+// exit 1 — pip failed
+{ "ok": false, "error": "pip install failed (exit 1). <tail>", "exit_code": 1 }
+```
 
 ### Programmatic Invocation Example (Python)
 
@@ -352,37 +396,44 @@ Get a key from: https://platform.openai.com/settings/organization/api-keys
 
 ### Missing API Key — Conversational Recovery
 
-When the script exits with code `1` because no key was found, **do not fail silently and do not invent a key.** Run this flow:
+When the script exits with code `1` because no key was found, **do not fail silently and do not invent a key.** The API key is the one thing the skill can't self-install, so this is where you put the user in control — use the **`AskUserQuestion` tool** so they pick from clear options rather than parsing prose.
 
-**1. State plainly what happened.** Something like:
+**1. State plainly what happened**, including *where* you looked (so they trust the search was real):
 
-> I couldn't find your `OPENAI_API_KEY` anywhere — not in this shell's environment, not in the Windows User/Machine env vars, and not in a `.env.local` or `.env` in the folder I'm running from (`<cwd>`). Here's how we can fix it:
+> I couldn't find your `OPENAI_API_KEY` anywhere — not in this shell's environment, not in the Windows User/Machine env vars, and not in a `.env.local` or `.env` in the folder I'm running from (`<cwd>`). How would you like to provide it?
 
-**2. Offer three paths and let the user choose.** Make it explicit that **they don't have to paste the key into the chat** if they'd rather not:
+**2. Ask with `AskUserQuestion`.** One question, header `"API key"`, with these four options (this ordering puts the most private, most reusable choices first and the transcript-exposing one last, with its warning inline):
 
-| Option | What I (the agent) do | Key visible in chat? | Persistence |
-|--------|----------------------|----------------------|-------------|
-| **A — You paste it, I save it** | With your OK, I create a `.env.local` in this folder containing `OPENAI_API_KEY=<your key>`. It's already gitignored, so it won't be committed. | Yes — it lands in this transcript | Persists for this project |
-| **B — You set it yourself** (key never touches chat) | You create the `.env.local` (or `.env`) yourself, or set the permanent Windows User env var (recipe below). Tell me when done and I'll re-run. | No | Persists |
-| **C — Permanent, machine-wide** | You run the PowerShell one-liner below once, then restart the terminal. Best if you'll use this skill often. | No | Permanent (all projects) |
+| Option label | What you (the agent) do | Key in transcript? | Persistence |
+|--------------|-------------------------|--------------------|-------------|
+| **Set a permanent env var (recommended)** | Give them the one-liner below; they run it once and restart the terminal. You re-run after they confirm. | No | Permanent, all projects |
+| **I'll create a `.env.local` myself** | They put `OPENAI_API_KEY=sk-...` in a `.env.local`/`.env` in this folder themselves; you don't see the key. Re-run when they say it's ready. | No | This project |
+| **Paste it here, you save it to `.env.local`** | On their OK, you write `OPENAI_API_KEY=<key>` to `.env.local` in this folder (already gitignored). ⚠️ The key lands in this chat transcript. | **Yes** | This project |
+| **Cancel** | Stop the image task; nothing is written. | — | — |
 
-**3. Provide the copy-paste recipes:**
+(`AskUserQuestion` always adds an "Other" escape hatch, so users can also point you at a key file or a different env var name.)
+
+**3. Copy-paste recipes** to hand over for the first two options:
 
 ```powershell
-# Option C — set the Windows User env var permanently (run once, then restart the terminal):
+# Permanent Windows User env var (run once, then restart the terminal):
 [System.Environment]::SetEnvironmentVariable('OPENAI_API_KEY','sk-...','User')
 ```
 
 ```bash
-# Option A/B — a .env.local in the working folder (gitignored). One line:
+# macOS/Linux permanent (append to your shell rc, then restart the shell):
+echo 'export OPENAI_API_KEY=sk-...' >> ~/.zshrc   # or ~/.bashrc
+
+# Per-project — a .env.local in the working folder (gitignored). One line:
 OPENAI_API_KEY=sk-...
 ```
 
-**4. Rules of conduct:**
-- **Never write the key to a file unless the user explicitly consents** (Option A). When you do, write only to `.env.local` (gitignored) — never to a tracked file, and never `git add` it.
+**4. Rules of conduct (non-negotiable):**
+- **Never write the key to a file unless the user explicitly chose the "paste it here" option.** When you do, write only to `.env.local` (gitignored) — never to a tracked file, and never `git add` it.
 - **Never echo the key back** in chat after receiving it, and never put it in a commit, a log, or a `--json` field.
-- If the user picks Option B/C, just wait — re-run the same command once they confirm the key is in place.
-- A pasted key lives in the transcript; if the user is uneasy about that, steer them to Option B or C.
+- If they pick a "set it yourself" option, just wait — re-run the same command (and `--preflight` to confirm) once they say the key is in place.
+- A pasted key lives in the transcript permanently; if the user seems at all unsure, nudge them toward the env-var or self-created-`.env.local` options.
+- Don't have them paste the key as a one-shot inline env var on the generate command — it scrolls into shell history and the transcript and doesn't persist. The options above are all better.
 
 ---
 

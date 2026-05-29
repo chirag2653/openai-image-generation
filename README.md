@@ -52,6 +52,14 @@ python skills/openai-image-generation/scripts/openai_generate.py --preflight --j
 
 It checks the API key **and** the `openai` SDK together and reports both at once — exit `0` when ready (`{"ok": true, "key_source": "...", "sdk": "1.97.1"}`), or exit `1` listing everything missing (`{"ok": false, "missing": ["key", "sdk"], "hint": "..."}`). This turns a brand-new environment into one setup pass instead of two sequential `exit 1` failures discovered mid-generation. Add `--probe` to also validate the key against the API (a free `models.list()` call) and catch invalid keys / unverified-org `403`s before spending credit.
 
+If the SDK is the only thing missing, the script can install it itself — into the very interpreter that will run it, so it can't land in the wrong Python:
+
+```bash
+python skills/openai-image-generation/scripts/openai_generate.py --install-deps
+```
+
+Inside an agent session this is automatic: the skill detects a missing SDK, self-installs, and only stops to ask you for the one thing it can't provide — your API key.
+
 ## Available Knobs
 
 | Flag | Required | Default | Notes |
@@ -68,6 +76,7 @@ It checks the API key **and** the `openai` SDK together and reports both at once
 | `--model` | ❌ | `gpt-image-2` | Override only if you need a legacy model |
 | `--preflight` | ❌ | off | No-cost readiness check (aliases `--check` / `--doctor`): reports API key + `openai` SDK status and exits `0`/`1` — no `--prompt`, no API call. See [Pre-flight Check](#pre-flight-check). |
 | `--probe` | ❌ | off | With `--preflight`, also validate the key via `models.list()` (a free call) to catch invalid keys / unverified-org `403`s before any paid generation. |
+| `--install-deps` | ❌ | off | Self-bootstrap (alias `--setup`): install the `openai` SDK into **the same interpreter** running the script (`sys.executable -m pip`), then exit. Idempotent. Lets a fresh machine fix the one auto-installable dependency without a separate `pip` command that might target the wrong Python. |
 
 ## Cost Reference
 
@@ -97,7 +106,7 @@ If none are found, the script exits with code `1` and prints how to fix it. Insi
 | Symptom | Fix |
 |---------|-----|
 | Exit `1`, "OPENAI_API_KEY not found" | Set the key (see [API Key Resolution](#api-key-resolution)). Easiest persistent option on Windows: `[System.Environment]::SetEnvironmentVariable('OPENAI_API_KEY','sk-...','User')`, then restart the terminal. |
-| Exit `1`, "'openai' package not installed" | `pip install "openai>=1.55.0"` |
+| Exit `1`, "'openai' package not installed" | `python …/openai_generate.py --install-deps` (installs into the right interpreter), or `pip install "openai>=1.55.0"` |
 | Exit `2` with a `403` | GPT Image models require API **Organization Verification** — verify your org in the OpenAI dashboard. |
 | Exit `2`, "invalid parameters" | `--n` must be ≥ 1 and `--compression` must be 0–100. Fix the flag and re-run. |
 | Exit `3` | Transient — the API returned no images. Safe to retry once. |

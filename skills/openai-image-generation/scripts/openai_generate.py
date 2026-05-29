@@ -20,6 +20,16 @@ Usage (no-cost pre-flight / setup check — no --prompt, no API call):
           paid generation. Run this FIRST so setup gaps surface as setup, not as
           a failed render.
 
+Usage (self-bootstrap the SDK — no --prompt, no API call):
+    python openai_generate.py --install-deps [--json]
+        → installs the bundled requirements (the `openai` SDK) into THIS SAME
+          interpreter via `{sys.executable} -m pip install`. Using sys.executable
+          (not a bare `pip`) guarantees the package lands where this script will
+          import it from — sidestepping the classic "pip installed it but `python`
+          still can't find it" mismatch on machines with multiple Pythons. The one
+          dependency a fresh machine can't self-install is the API key, which only
+          the user can provide.
+
 If --output is omitted, the script writes to:
     outputs/openai-image-YYYYMMDD-HHMMSS.png  (relative to current working dir)
 
@@ -32,9 +42,11 @@ API Key (read-only — script never writes the key anywhere):
       4. .env in the current working directory
 
 Exit codes:
-    0  success — file(s) saved  (or, in --preflight, prerequisites all present)
+    0  success — file(s) saved  (or, in --preflight, prerequisites all present;
+       or, in --install-deps, the SDK installed cleanly)
     1  key missing OR openai SDK not installed (stop and tell user how to fix);
-       in --preflight, one or more prerequisites missing (key / sdk / probe)
+       in --preflight, one or more prerequisites missing (key / sdk / probe);
+       in --install-deps, the pip install failed
     2  API call failed (e.g. quota, invalid prompt, moderation rejection) OR
        invalid parameters caught locally (--n < 1, --compression out of 0-100)
     3  API returned no images (transient — safe to retry once)
@@ -215,6 +227,57 @@ def detect_sdk() -> tuple[bool, str | None]:
     return True, getattr(openai, "__version__", None)
 
 
+def _requirements_path() -> Path:
+    """Path to the bundled requirements.txt (one level up from scripts/)."""
+    return Path(__file__).resolve().parent.parent / "requirements.txt"
+
+
+def run_install_deps(json_mode: bool) -> int:
+    """Self-bootstrap: install the bundled requirements (the `openai` SDK) into
+    THIS interpreter via `{sys.executable} -m pip install`.
+
+    Keyed off sys.executable on purpose — a bare `pip` may belong to a different
+    Python than the one running this script, so the package would install but
+    stay unimportable here. Returns 0 on success, 1 on failure. Idempotent: if
+    the SDK is already present, pip is a fast no-op. Never touches the paid
+    image endpoint and never needs an API key."""
+    if detect_sdk()[0]:
+        if json_mode:
+            print(json.dumps({"ok": True, "installed": False,
+                              "detail": "openai SDK already present"}))
+        else:
+            print("Dependencies: already satisfied (openai SDK present).")
+        return 0
+
+    req = _requirements_path()
+    cmd = [sys.executable, "-m", "pip", "install"]
+    cmd += ["-r", str(req)] if req.exists() else ["openai>=1.55.0"]
+
+    info(f"Installing dependencies: {' '.join(cmd)}", json_mode)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return emit_error(f"could not launch pip ({exc}). Install manually: "
+                          f"pip install -r \"{req}\"", 1, json_mode)
+
+    if result.returncode != 0:
+        tail = (result.stderr or result.stdout or "").strip()[-600:]
+        return emit_error(f"pip install failed (exit {result.returncode}). "
+                          f"{tail}", 1, json_mode)
+
+    # Confirm it's now importable from this interpreter.
+    present, version = detect_sdk()
+    if not present:
+        return emit_error("pip reported success but the openai SDK is still not "
+                          "importable from this interpreter. Check for a Python "
+                          "version mismatch.", 1, json_mode)
+    if json_mode:
+        print(json.dumps({"ok": True, "installed": True, "sdk": version}))
+    else:
+        print(f"Dependencies: installed openai SDK ({version or 'unknown version'}).")
+    return 0
+
+
 def auth_probe(api_key: str) -> tuple[str, bool]:
     """Lightweight, opt-in auth check via models.list() (a free GET — never the
     paid image endpoint). Returns (status_message, ok). Surfaces invalid keys
@@ -393,12 +456,19 @@ def parse_args() -> argparse.Namespace:
                         help="With --preflight, also run an opt-in auth check via "
                              "models.list() (a free call) to catch invalid keys / "
                              "unverified-org 403s before any paid generation.")
+    parser.add_argument("--install-deps", "--setup", action="store_true",
+                        dest="install_deps",
+                        help="Self-bootstrap: install the bundled requirements "
+                             "(the openai SDK) into THIS interpreter via "
+                             "`{sys.executable} -m pip install`, then exit. No "
+                             "--prompt and no API call required. Safe to re-run "
+                             "(no-op if the SDK is already present).")
     args = parser.parse_args()
-    # --prompt is required for generation but not for --preflight. argparse can't
-    # express this conditional, so enforce it here (parser.error exits like a
-    # normal argparse failure).
-    if not args.preflight and not args.prompt:
-        parser.error("--prompt/-p is required (unless --preflight)")
+    # --prompt is required for generation but not for the setup-only modes
+    # (--preflight / --install-deps). argparse can't express this conditional,
+    # so enforce it here (parser.error exits like a normal argparse failure).
+    if not args.preflight and not args.install_deps and not args.prompt:
+        parser.error("--prompt/-p is required (unless --preflight or --install-deps)")
     return args
 
 
@@ -408,6 +478,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     json_mode = args.json_output
+
+    # Setup-only mode: self-bootstrap the SDK into THIS interpreter and exit.
+    # Never reaches the paid image endpoint, never needs an API key.
+    if args.install_deps:
+        return run_install_deps(json_mode=json_mode)
 
     # Step 0: no-cost pre-flight. Report key + SDK (+ optional probe) readiness
     # and exit — never reaches the paid image endpoint.
